@@ -1,6 +1,10 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { sessionManager } from "../../claude/session-manager.js";
 import { getPermissionHandler } from "../../claude/permission-handler.js";
+import {
+  getAbortController,
+  clearController,
+} from "../../claude/query-runner.js";
 import { StreamRenderer } from "../../claude/stream-renderer.js";
 import { MessageSender } from "../../telegram/message-sender.js";
 import { messageQueue } from "../../utils/queue.js";
@@ -28,6 +32,7 @@ export async function handleMessage(ctx: BotContext): Promise<void> {
     sender.setInitialMessage(statusMsg.message_id);
     const renderer = new StreamRenderer(sender);
     const permHandler = getPermissionHandler(ctx.api, chatId);
+    const abortController = getAbortController(chatId);
 
     try {
       const session = await sessionManager.getOrCreate(project.id);
@@ -91,10 +96,16 @@ export async function handleMessage(ctx: BotContext): Promise<void> {
       await renderer.finish();
       await sessionManager.touchActivity(session.dbId);
     } catch (error) {
-      logger.error({ error }, "Claude query failed");
-      await sender.updateText(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      if (abortController.signal.aborted) {
+        await sender.updateText("Cancelled.");
+      } else {
+        logger.error({ error }, "Claude query failed");
+        await sender.updateText(
+          `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        );
+      }
+    } finally {
+      clearController(chatId);
     }
   });
 }

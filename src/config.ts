@@ -10,6 +10,7 @@ const configSchema = z.object({
     .pipe(z.array(z.number().int().positive())),
   workDir: z.string().default(process.cwd()),
   databaseUrl: z.string().min(1),
+  openaiApiKey: z.string().optional(),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -21,5 +22,6 @@ export const config = configSchema.parse({
   allowedUserIds: process.env["ALLOWED_USER_IDS"],
   workDir: process.env["WORK_DIR"],
   databaseUrl: process.env["DATABASE_URL"],
+  openaiApiKey: process.env["OPENAI_API_KEY"],
   logLevel: process.env["LOG_LEVEL"],
 });
