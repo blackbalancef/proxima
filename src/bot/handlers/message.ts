@@ -1,5 +1,10 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../../config.js";
+import { sessionManager } from "../../claude/session-manager.js";
+import { StreamRenderer } from "../../claude/stream-renderer.js";
+import { MessageSender } from "../../telegram/message-sender.js";
+import { projectRepo } from "../../db/repositories/project.js";
+import { messageQueue } from "../../utils/queue.js";
 import { logger } from "../../utils/logger.js";
 import type { BotContext } from "../context.js";
 
@@ -8,80 +13,71 @@ export async function handleMessage(ctx: BotContext): Promise<void> {
   if (!text) return;
 
   const chatId = ctx.chat?.id;
-  logger.info({ chatId, text: text.slice(0, 100) }, "Incoming message");
+  if (!chatId) return;
 
-  const statusMsg = await ctx.reply("⏳ Thinking...");
+  // Get or create default project
+  let project = await projectRepo.findActiveByChat(chatId);
+  if (!project) {
+    project = await projectRepo.create({
+      telegram_chat_id: chatId,
+      name: "default",
+      directory: config.workDir,
+      is_active: true,
+      permission_mode: "bypassPermissions",
+    });
+  }
 
-  try {
-    let resultText = "";
+  const projectId = project.id;
 
-    for await (const message of query({
-      prompt: text,
-      options: {
-        cwd: config.workDir,
+  // Enqueue for sequential processing per project
+  messageQueue.enqueue(projectId, async () => {
+    logger.info(
+      { chatId, projectId, text: text.slice(0, 100) },
+      "Processing message",
+    );
+
+    const statusMsg = await ctx.reply("⏳ Thinking...");
+    const sender = new MessageSender(ctx.api, chatId);
+    sender.setInitialMessage(statusMsg.message_id);
+    const renderer = new StreamRenderer(sender);
+
+    try {
+      const session = await sessionManager.getOrCreate(projectId);
+
+      const options: Record<string, unknown> = {
+        cwd: project.directory,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
-      },
-    })) {
-      if ("result" in message) {
-        resultText = message.result;
+      };
+
+      // Resume session if we have a Claude session ID
+      if (session.claudeSessionId) {
+        options["resume"] = session.claudeSessionId;
       }
+
+      for await (const message of query({
+        prompt: text,
+        options: options as Parameters<typeof query>[0]["options"],
+      })) {
+        // Capture session ID from init message
+        const msg = message as Record<string, unknown>;
+        if (msg["type"] === "system" && msg["subtype"] === "init") {
+          const sid = msg["session_id"];
+          if (typeof sid === "string") {
+            await sessionManager.updateClaudeSessionId(session.dbId, sid);
+          }
+        }
+
+        await renderer.processMessage(msg);
+      }
+
+      await renderer.finish();
+      await sessionManager.touchActivity(session.dbId);
+    } catch (error) {
+      logger.error({ error }, "Claude query failed");
+      await sender.updateText(
+        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
-
-    if (!resultText) {
-      resultText = "(No response from Claude)";
-    }
-
-    // Split long messages (Telegram limit is 4096 chars)
-    const chunks = splitMessage(resultText, 4000);
-    // Edit the first "thinking" message with the first chunk
-    await ctx.api.editMessageText(
-      statusMsg.chat.id,
-      statusMsg.message_id,
-      chunks[0]!,
-      { parse_mode: undefined },
-    );
-
-    // Send remaining chunks as new messages
-    for (let i = 1; i < chunks.length; i++) {
-      await ctx.reply(chunks[i]!);
-    }
-  } catch (error) {
-    logger.error({ error }, "Claude query failed");
-    await ctx.api.editMessageText(
-      statusMsg.chat.id,
-      statusMsg.message_id,
-      `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-    );
-  }
-}
-
-function splitMessage(text: string, maxLen: number): string[] {
-  if (text.length <= maxLen) return [text];
-
-  const chunks: string[] = [];
-  let remaining = text;
-
-  while (remaining.length > 0) {
-    if (remaining.length <= maxLen) {
-      chunks.push(remaining);
-      break;
-    }
-
-    // Try to split at newline
-    let splitIdx = remaining.lastIndexOf("\n", maxLen);
-    if (splitIdx < maxLen / 2) {
-      // No good newline found — split at space
-      splitIdx = remaining.lastIndexOf(" ", maxLen);
-    }
-    if (splitIdx < maxLen / 2) {
-      // No good space found — hard split
-      splitIdx = maxLen;
-    }
-
-    chunks.push(remaining.slice(0, splitIdx));
-    remaining = remaining.slice(splitIdx).trimStart();
-  }
-
-  return chunks;
+  });
 }

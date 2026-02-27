@@ -9,6 +9,7 @@ const configSchema = z.object({
     .transform((s) => s.split(",").map((id) => Number(id.trim())))
     .pipe(z.array(z.number().int().positive())),
   workDir: z.string().default(process.cwd()),
+  databaseUrl: z.string().min(1),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -19,5 +20,6 @@ export const config = configSchema.parse({
   anthropicApiKey: process.env["ANTHROPIC_API_KEY"],
   allowedUserIds: process.env["ALLOWED_USER_IDS"],
   workDir: process.env["WORK_DIR"],
+  databaseUrl: process.env["DATABASE_URL"],
   logLevel: process.env["LOG_LEVEL"],
 });

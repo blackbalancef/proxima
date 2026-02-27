@@ -1,17 +1,14 @@
 import { createBot } from "./bot/bot.js";
+import { runMigrations } from "./db/migrate.js";
+import { setupGracefulShutdown } from "./utils/lifecycle.js";
 import { logger } from "./utils/logger.js";
 
 async function main(): Promise<void> {
+  // Run DB migrations
+  await runMigrations();
+
   const bot = createBot();
-
-  // Graceful shutdown
-  const shutdown = async (signal: string) => {
-    logger.info({ signal }, "Shutting down...");
-    bot.stop();
-  };
-
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  setupGracefulShutdown(bot);
 
   logger.info("Starting Proxima bot...");
   await bot.start({
