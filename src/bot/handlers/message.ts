@@ -1,9 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { config } from "../../config.js";
 import { sessionManager } from "../../claude/session-manager.js";
 import { StreamRenderer } from "../../claude/stream-renderer.js";
 import { MessageSender } from "../../telegram/message-sender.js";
-import { projectRepo } from "../../db/repositories/project.js";
 import { messageQueue } from "../../utils/queue.js";
 import { logger } from "../../utils/logger.js";
 import type { BotContext } from "../context.js";
@@ -15,24 +13,12 @@ export async function handleMessage(ctx: BotContext): Promise<void> {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
 
-  // Get or create default project
-  let project = await projectRepo.findActiveByChat(chatId);
-  if (!project) {
-    project = await projectRepo.create({
-      telegram_chat_id: chatId,
-      name: "default",
-      directory: config.workDir,
-      is_active: true,
-      permission_mode: "bypassPermissions",
-    });
-  }
-
-  const projectId = project.id;
+  const project = ctx.project;
 
   // Enqueue for sequential processing per project
-  messageQueue.enqueue(projectId, async () => {
+  messageQueue.enqueue(project.id, async () => {
     logger.info(
-      { chatId, projectId, text: text.slice(0, 100) },
+      { chatId, projectId: project.id, text: text.slice(0, 100) },
       "Processing message",
     );
 
@@ -42,7 +28,7 @@ export async function handleMessage(ctx: BotContext): Promise<void> {
     const renderer = new StreamRenderer(sender);
 
     try {
-      const session = await sessionManager.getOrCreate(projectId);
+      const session = await sessionManager.getOrCreate(project.id);
 
       const options: Record<string, unknown> = {
         cwd: project.directory,

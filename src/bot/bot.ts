@@ -2,37 +2,42 @@ import { Bot } from "grammy";
 import { config } from "../config.js";
 import type { BotContext } from "./context.js";
 import { authMiddleware } from "./middleware/auth.js";
+import { projectResolverMiddleware } from "./middleware/project-resolver.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { handleMessage } from "./handlers/message.js";
+import { startCommand, helpCommand } from "./commands/help.js";
+import {
+  newProjectCommand,
+  listProjectsCommand,
+  switchProjectCommand,
+  deleteProjectCommand,
+  renameProjectCommand,
+} from "./commands/project.js";
+import { resetSessionCommand, infoCommand } from "./commands/session.js";
 
 export function createBot(): Bot<BotContext> {
   const bot = new Bot<BotContext>(config.telegramBotToken);
 
   bot.catch(errorHandler);
 
-  // Auth: only allowed users
+  // Middleware stack
   bot.use(authMiddleware);
+  bot.use(projectResolverMiddleware);
 
   // Commands
-  bot.command("start", (ctx) =>
-    ctx.reply(
-      "Welcome to Proxima! Send me a message and I'll forward it to Claude Code.",
-    ),
-  );
+  bot.command("start", startCommand);
+  bot.command("help", helpCommand);
 
-  bot.command("help", (ctx) =>
-    ctx.reply(
-      [
-        "Proxima — Claude Code Telegram Bot",
-        "",
-        "Just send a text message to chat with Claude Code.",
-        "",
-        "Commands:",
-        "/start — Welcome message",
-        "/help — Show this help",
-      ].join("\n"),
-    ),
-  );
+  // Project commands
+  bot.command("new", newProjectCommand);
+  bot.command("projects", listProjectsCommand);
+  bot.command("switch", switchProjectCommand);
+  bot.command("delete", deleteProjectCommand);
+  bot.command("rename", renameProjectCommand);
+
+  // Session commands
+  bot.command("reset", resetSessionCommand);
+  bot.command("info", infoCommand);
 
   // Text messages → Claude
   bot.on("message:text", handleMessage);
