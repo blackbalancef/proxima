@@ -5,6 +5,7 @@ import { authMiddleware } from "./middleware/auth.js";
 import { projectResolverMiddleware } from "./middleware/project-resolver.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { handleMessage } from "./handlers/message.js";
+import { handleCallback } from "./handlers/callback.js";
 import { startCommand, helpCommand } from "./commands/help.js";
 import {
   newProjectCommand,
@@ -14,6 +15,7 @@ import {
   renameProjectCommand,
 } from "./commands/project.js";
 import { resetSessionCommand, infoCommand } from "./commands/session.js";
+import { permissionsCommand } from "./commands/permissions.js";
 
 export function createBot(): Bot<BotContext> {
   const bot = new Bot<BotContext>(config.telegramBotToken);
@@ -38,6 +40,10 @@ export function createBot(): Bot<BotContext> {
   // Session commands
   bot.command("reset", resetSessionCommand);
   bot.command("info", infoCommand);
+  bot.command("permissions", permissionsCommand);
+
+  // Callback queries (inline buttons)
+  bot.on("callback_query:data", handleCallback);
 
   // Text messages → Claude
   bot.on("message:text", handleMessage);

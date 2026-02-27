@@ -1,5 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { sessionManager } from "../../claude/session-manager.js";
+import { getPermissionHandler } from "../../claude/permission-handler.js";
 import { StreamRenderer } from "../../claude/stream-renderer.js";
 import { MessageSender } from "../../telegram/message-sender.js";
 import { messageQueue } from "../../utils/queue.js";
@@ -26,19 +27,49 @@ export async function handleMessage(ctx: BotContext): Promise<void> {
     const sender = new MessageSender(ctx.api, chatId);
     sender.setInitialMessage(statusMsg.message_id);
     const renderer = new StreamRenderer(sender);
+    const permHandler = getPermissionHandler(ctx.api, chatId);
 
     try {
       const session = await sessionManager.getOrCreate(project.id);
+      const isBypass = project.permission_mode === "bypassPermissions";
 
       const options: Record<string, unknown> = {
         cwd: project.directory,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
+        permissionMode: project.permission_mode,
       };
+
+      if (isBypass) {
+        options["allowDangerouslySkipPermissions"] = true;
+      }
 
       // Resume session if we have a Claude session ID
       if (session.claudeSessionId) {
         options["resume"] = session.claudeSessionId;
+      }
+
+      // Set up PermissionRequest hook for interactive approval
+      if (!isBypass && project.permission_mode !== "dontAsk") {
+        options["hooks"] = {
+          PermissionRequest: [
+            {
+              matcher: ".*",
+              hooks: [
+                async (input: Record<string, unknown>) => {
+                  const toolName = String(
+                    input["tool_name"] ?? input["toolName"] ?? "unknown",
+                  );
+                  const toolInput =
+                    (input["tool_input"] as Record<string, unknown>) ?? {};
+                  const allowed = await permHandler.requestPermission(
+                    toolName,
+                    toolInput,
+                  );
+                  return allowed ? {} : { decision: "deny" };
+                },
+              ],
+            },
+          ],
+        };
       }
 
       for await (const message of query({
