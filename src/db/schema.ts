@@ -3,6 +3,7 @@ import type { Generated, Insertable, Selectable, Updateable } from "kysely";
 export interface Database {
   projects: ProjectTable;
   sessions: SessionTable;
+  mcp_configs: McpConfigTable;
 }
 
 export interface ProjectTable {
@@ -31,3 +32,16 @@ export interface SessionTable {
 export type Session = Selectable<SessionTable>;
 export type NewSession = Insertable<SessionTable>;
 export type SessionUpdate = Updateable<SessionTable>;
+
+export interface McpConfigTable {
+  id: Generated<number>;
+  project_id: number;
+  server_name: string;
+  config_json: string;
+  enabled: boolean;
+  created_at: Generated<Date>;
+}
+
+export type McpConfig = Selectable<McpConfigTable>;
+export type NewMcpConfig = Insertable<McpConfigTable>;
+export type McpConfigUpdate = Updateable<McpConfigTable>;

@@ -20,6 +20,10 @@ import { resetSessionCommand, infoCommand } from "./commands/session.js";
 import { permissionsCommand } from "./commands/permissions.js";
 import { modeCommand } from "./commands/mode.js";
 import { cancelCommand } from "./commands/cancel.js";
+import { mcpCommand } from "./commands/mcp.js";
+import { memoryCommand } from "./commands/memory.js";
+import { serverCommand } from "./commands/server.js";
+import { usersCommand } from "./commands/users.js";
 
 export function createBot(): Bot<BotContext> {
   const bot = new Bot<BotContext>(config.telegramBotToken);
@@ -30,11 +34,10 @@ export function createBot(): Bot<BotContext> {
   bot.use(authMiddleware);
   bot.use(projectResolverMiddleware);
 
-  // Commands
+  // General commands
   bot.command("start", startCommand);
   bot.command("help", helpCommand);
   bot.command("cancel", cancelCommand);
-  bot.command("mode", modeCommand);
 
   // Project commands
   bot.command("new", newProjectCommand);
@@ -46,7 +49,16 @@ export function createBot(): Bot<BotContext> {
   // Session commands
   bot.command("reset", resetSessionCommand);
   bot.command("info", infoCommand);
+
+  // Settings
+  bot.command("mode", modeCommand);
   bot.command("permissions", permissionsCommand);
+  bot.command("mcp", mcpCommand);
+  bot.command("memory", memoryCommand);
+
+  // Admin
+  bot.command("server", serverCommand);
+  bot.command("users", usersCommand);
 
   // Callback queries (inline buttons)
   bot.on("callback_query:data", handleCallback);

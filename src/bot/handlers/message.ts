@@ -7,6 +7,7 @@ import {
 } from "../../claude/query-runner.js";
 import { StreamRenderer } from "../../claude/stream-renderer.js";
 import { MessageSender } from "../../telegram/message-sender.js";
+import { mcpConfigRepo } from "../../db/repositories/mcp-config.js";
 import { messageQueue } from "../../utils/queue.js";
 import { logger } from "../../utils/logger.js";
 import type { BotContext } from "../context.js";
@@ -50,6 +51,16 @@ export async function handleMessage(ctx: BotContext): Promise<void> {
       // Resume session if we have a Claude session ID
       if (session.claudeSessionId) {
         options["resume"] = session.claudeSessionId;
+      }
+
+      // Load MCP servers for this project
+      const mcpConfigs = await mcpConfigRepo.findEnabledByProject(project.id);
+      if (mcpConfigs.length > 0) {
+        const mcpServers: Record<string, unknown> = {};
+        for (const cfg of mcpConfigs) {
+          mcpServers[cfg.server_name] = JSON.parse(cfg.config_json);
+        }
+        options["mcpServers"] = mcpServers;
       }
 
       // Set up PermissionRequest hook for interactive approval

@@ -40,5 +40,17 @@ export async function runMigrations(): Promise<void> {
     ON sessions(project_id)
   `.execute(db);
 
+  await sql`
+    CREATE TABLE IF NOT EXISTS mcp_configs (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      server_name TEXT NOT NULL,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(project_id, server_name)
+    )
+  `.execute(db);
+
   logger.info("Migrations complete");
 }
