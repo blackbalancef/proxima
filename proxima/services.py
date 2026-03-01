@@ -4,15 +4,15 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from proxima.claude.session_manager import SessionManager
+
+if TYPE_CHECKING:
+    from proxima.claude.limit_keeper import LimitKeeper
 from proxima.commands.storage import CommandStorage
 from proxima.db.engine import Database
 from proxima.db.repositories.mcp_config import MCPConfigRepository
 from proxima.db.repositories.project import ProjectRepository
 from proxima.db.repositories.session import SessionRepository
 from proxima.settings import Settings
-
-if TYPE_CHECKING:
-    from proxima.claude.session_watchdog import SessionWatchdog
 
 
 @dataclass
@@ -24,7 +24,7 @@ class Services:
     mcp_configs: MCPConfigRepository
     session_manager: SessionManager
     command_storage: CommandStorage
-    watchdog: SessionWatchdog | None = field(default=None)
+    limit_keeper: LimitKeeper | None = field(default=None)
     claude_slash_commands: set[str] = field(default_factory=set)
 
 

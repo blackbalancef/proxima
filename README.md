@@ -57,7 +57,6 @@ This runs an interactive wizard that creates `.env`. You need:
 | `WORK_DIR` | no | Base directory for projects (default: `./projects/`) |
 | `OPENAI_API_KEY` | no | Enables voice transcription |
 | `WHISPER_LANGUAGE` | no | ISO-639-1 code (e.g. `ru`, `en`). Auto-detect if unset |
-| `SESSION_TIMEOUT` | no | Session idle timeout in minutes (default: 30) |
 
 ### 4. Run
 

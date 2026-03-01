@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, desc, func, select, update
@@ -25,17 +24,6 @@ class SessionRepository:
             )
             return result.scalar_one_or_none()
 
-    async def find_idle_by_project(self, project_id: int) -> Session | None:
-        async with self.db.session() as session:
-            result = await session.execute(
-                select(Session)
-                .where(Session.project_id == project_id)
-                .where(Session.status == "idle")
-                .order_by(desc(Session.last_activity))
-                .limit(1)
-            )
-            return result.scalar_one_or_none()
-
     async def find_active_by_thread(self, chat_id: int, thread_id: int) -> Session | None:
         async with self.db.session() as session:
             result = await session.execute(
@@ -44,19 +32,6 @@ class SessionRepository:
                 .where(Project.telegram_chat_id == chat_id)
                 .where(Session.message_thread_id == thread_id)
                 .where(Session.status == "active")
-                .order_by(desc(Session.last_activity))
-                .limit(1)
-            )
-            return result.scalar_one_or_none()
-
-    async def find_idle_by_thread(self, chat_id: int, thread_id: int) -> Session | None:
-        async with self.db.session() as session:
-            result = await session.execute(
-                select(Session)
-                .join(Project, Session.project_id == Project.id)
-                .where(Project.telegram_chat_id == chat_id)
-                .where(Session.message_thread_id == thread_id)
-                .where(Session.status == "idle")
                 .order_by(desc(Session.last_activity))
                 .limit(1)
             )
@@ -110,15 +85,6 @@ class SessionRepository:
             await session.refresh(db_session)
             return db_session
 
-    async def touch_activity(self, session_id: int) -> None:
-        async with self.db.session() as session:
-            await session.execute(
-                update(Session)
-                .where(Session.id == session_id)
-                .values(last_activity=datetime.now(UTC))
-            )
-            await session.commit()
-
     async def close_by_project(self, project_id: int) -> None:
         async with self.db.session() as session:
             await session.execute(
@@ -126,26 +92,6 @@ class SessionRepository:
                 .where(Session.project_id == project_id)
                 .where(Session.status == "active")
                 .values(status="closed")
-            )
-            await session.commit()
-
-    async def find_stale_sessions_with_chat(
-        self, timeout_minutes: int
-    ) -> list[tuple[Session, int, int | None]]:
-        cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
-        async with self.db.session() as session:
-            result = await session.execute(
-                select(Session, Project.telegram_chat_id)
-                .join(Project, Session.project_id == Project.id)
-                .where(Session.status == "active")
-                .where(Session.last_activity < cutoff)
-            )
-            return [(row[0], row[1], row[0].message_thread_id) for row in result.all()]
-
-    async def mark_idle(self, session_id: int) -> None:
-        async with self.db.session() as session:
-            await session.execute(
-                update(Session).where(Session.id == session_id).values(status="idle")
             )
             await session.commit()
 

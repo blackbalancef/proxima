@@ -40,7 +40,6 @@ Copy `.env.example` → `.env`. Required variables:
 - `WHISPER_LANGUAGE` — ISO-639-1 language code for transcription (optional; auto-detect if unset)
 - `ANTHROPIC_API_KEY` — optional (SDK may use its own env)
 - `LOG_LEVEL` — debug/info/warn/error (default: info)
-- `SESSION_TIMEOUT` — session idle timeout in minutes (default: 30)
 
 PostgreSQL and DB migrations start automatically with `proxima run` / `proxima start`.
 
@@ -64,7 +63,6 @@ proxima/
     session_manager.py # DB-backed session CRUD; resumption via claude_session_id
     stream_renderer.py # SDK events → Telegram messages (debounced 500ms, auto-split)
     permission_handler.py # Inline-button approval with 5-min timeout; Allow/Deny/Allow All
-    session_watchdog.py # Auto-idle stale sessions + Telegram notifications
   commands/
     storage.py         # Custom slash command CRUD (.claude/commands/*.md)
   db/
@@ -73,7 +71,7 @@ proxima/
     migrate.py         # Raw SQL migrations (idempotent, runs on startup)
     repositories/
       project.py       # Project CRUD
-      session.py       # Session CRUD + touchActivity
+      session.py       # Session CRUD
       mcp_config.py    # MCP server config per project
   telegram/
     message_sender.py  # Edit-then-split strategy: edits up to 4000 chars, then new messages
@@ -98,7 +96,6 @@ proxima/
 2. `iter_claude_query()` calls the SDK's `query()` with `resume` session ID if one exists.
 3. The `init` event from the SDK stream carries the actual `session_id`, which is stored back in the DB.
 4. On `/reset`, the session is closed; next message starts a fresh session.
-5. `SessionWatchdog` runs every 60s; marks sessions as `idle` after `SESSION_TIMEOUT` minutes of inactivity and notifies the user. Next message auto-resumes the idle session.
 
 **Custom slash commands**: `/cmd` manages `.md` files in `~/.claude/commands/` (user scope) and `<project>/.claude/commands/` (project scope). Commands are invoked via `/user:<name>` or `/project:<name>` — the bot substitutes `$ARGUMENTS` and forwards the prompt to Claude.
 

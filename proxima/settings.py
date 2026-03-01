@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     whisper_language: str | None = None
     anthropic_api_key: str | None = None
     log_level: Literal["debug", "info", "warn", "error"] = "info"
-    session_timeout: int = Field(default=30, ge=1, description="Session timeout in minutes")
+    limit_keeper_enabled: bool = True
+    limit_keeper_model: str = "claude-3-5-haiku-20241022"
 
     @field_validator("allowed_user_ids", mode="before")
     @classmethod

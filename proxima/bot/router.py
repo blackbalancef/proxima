@@ -136,7 +136,6 @@ def build_router(services: Services) -> Router:
                     "  /close_prox",
                     "  /cancel_prox",
                     "  /info_prox",
-                    "  /timeout_prox <minutes>",
                     "",
                     " Settings:",
                     "  /model_prox [opus|sonnet|haiku]",
@@ -393,8 +392,6 @@ def build_router(services: Services) -> Router:
         else:
             sess = await services.sessions.find_active_by_project(project.id)
             if sess is None:
-                sess = await services.sessions.find_idle_by_project(project.id)
-            if sess is None:
                 await message.answer("No active session to close.")
                 return
             tid = sess.message_thread_id
@@ -439,28 +436,6 @@ def build_router(services: Services) -> Router:
             lines.append("Session: none")
 
         await message.answer("\n".join(lines))
-
-    @router.message(Command("timeout_prox"))
-    async def timeout_command(message: Message) -> None:
-        arg = _command_args(message).strip()
-        if not arg:
-            timeout = services.settings.session_timeout
-            if services.watchdog:
-                timeout = services.watchdog.timeout_minutes
-            await message.answer(
-                f"Session timeout: {timeout} min\n\nUsage: /timeout_prox <minutes>"
-            )
-            return
-        try:
-            minutes = int(arg)
-            if minutes < 1:
-                raise ValueError
-        except ValueError:
-            await message.answer("Timeout must be a positive integer (minutes).")
-            return
-        if services.watchdog:
-            services.watchdog.timeout_minutes = minutes
-        await message.answer(f"Session timeout set to {minutes} min.")
 
     @router.message(Command("model_prox"))
     async def model_command(
@@ -760,9 +735,6 @@ def build_router(services: Services) -> Router:
     async def config_command(message: Message) -> None:
         s = services.settings
         whisper_status = "enabled" if s.openai_api_key else "disabled"
-        timeout = s.session_timeout
-        if services.watchdog:
-            timeout = services.watchdog.timeout_minutes
         try:
             from claude_agent_sdk import __version__ as sdk_version
         except Exception:
@@ -772,7 +744,6 @@ def build_router(services: Services) -> Router:
                 [
                     f"Allowed users: {len(s.allowed_user_ids)}",
                     f"Projects dir: {s.work_dir}",
-                    f"Session timeout: {timeout} min",
                     f"Whisper: {whisper_status}",
                     f"Log level: {s.log_level}",
                     f"Claude SDK: {sdk_version}",
@@ -1137,7 +1108,6 @@ async def _enqueue_prompt(
                 await renderer.process_message(sdk_message)
 
             await renderer.finish()
-            await services.session_manager.touch_activity(session.db_id)
         except asyncio.CancelledError:
             await sender.update_text("Cancelled.")
         except Exception as exc:  # noqa: BLE001

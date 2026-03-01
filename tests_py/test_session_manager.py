@@ -41,27 +41,11 @@ async def test_get_or_create_returns_existing_active(
     repo.find_idle_by_project.assert_not_awaited()
 
 
-async def test_get_or_create_resumes_idle_session(
-    manager: tuple[SessionManager, AsyncMock],
-) -> None:
-    mgr, repo = manager
-    repo.find_active_by_project.return_value = None
-    idle = _make_session(status="idle")
-    repo.find_idle_by_project.return_value = idle
-
-    result = await mgr.get_or_create(10)
-
-    assert result.db_id == idle.id
-    assert result.resumed is True
-    repo.update.assert_awaited_once_with(idle.id, {"status": "active"})
-
-
 async def test_get_or_create_creates_new(
     manager: tuple[SessionManager, AsyncMock],
 ) -> None:
     mgr, repo = manager
     repo.find_active_by_project.return_value = None
-    repo.find_idle_by_project.return_value = None
     new_session = _make_session(claude_session_id=None)
     repo.create.return_value = new_session
 

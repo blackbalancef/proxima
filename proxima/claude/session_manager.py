@@ -45,18 +45,6 @@ class SessionManager:
                 model=existing.model,
             )
 
-        idle = await self.session_repo.find_idle_by_project(project_id)
-        if idle:
-            await self.session_repo.update(idle.id, {"status": "active"})
-            logger.info("session_resumed_from_idle", db_id=idle.id, project_id=project_id)
-            return ActiveSession(
-                db_id=idle.id,
-                project_id=idle.project_id,
-                claude_session_id=idle.claude_session_id,
-                resumed=True,
-                model=idle.model,
-            )
-
         session = await self.session_repo.create({"project_id": project_id, "status": "active"})
         logger.info("session_created", db_id=session.id, project_id=project_id)
         return ActiveSession(
@@ -82,23 +70,6 @@ class SessionManager:
                 model=existing.model,
             )
 
-        idle = await self.session_repo.find_idle_by_thread(chat_id, thread_id)
-        if idle:
-            await self.session_repo.update(idle.id, {"status": "active"})
-            logger.info(
-                "thread_session_resumed_from_idle",
-                db_id=idle.id,
-                thread_id=thread_id,
-            )
-            return ActiveSession(
-                db_id=idle.id,
-                project_id=idle.project_id,
-                claude_session_id=idle.claude_session_id,
-                thread_id=thread_id,
-                resumed=True,
-                model=idle.model,
-            )
-
         session = await self.session_repo.create(
             {"project_id": project_id, "status": "active", "message_thread_id": thread_id}
         )
@@ -115,9 +86,6 @@ class SessionManager:
     async def update_claude_session_id(self, db_id: int, claude_session_id: str) -> None:
         await self.session_repo.update(db_id, {"claude_session_id": claude_session_id})
         logger.debug("claude_session_id_updated", db_id=db_id, claude_session_id=claude_session_id)
-
-    async def touch_activity(self, db_id: int) -> None:
-        await self.session_repo.touch_activity(db_id)
 
     async def reset_session(self, project_id: int) -> None:
         await self.session_repo.close_by_project(project_id)
