@@ -6,7 +6,6 @@ from aiogram import Bot
 from aiogram.types import BotCommand
 
 from proxima.bot.factory import create_dispatcher
-from proxima.claude.limit_keeper import LimitKeeper
 from proxima.db.migrate import run_migrations
 from proxima.lifecycle import setup_signal_handlers
 from proxima.logging import configure_logging, get_logger
@@ -22,22 +21,11 @@ class App:
         self.bot = Bot(token=services.settings.telegram_bot_token)
         self.dispatcher = create_dispatcher(services)
         self._shutdown_requested = asyncio.Event()
-        self.limit_keeper: LimitKeeper | None = None
-        if services.settings.limit_keeper_enabled and services.settings.anthropic_api_key:
-            self.limit_keeper = LimitKeeper(
-                api_key=services.settings.anthropic_api_key,
-                bot=self.bot,
-                notify_chat_ids=services.settings.allowed_user_ids,
-                model=services.settings.limit_keeper_model,
-            )
-            services.limit_keeper = self.limit_keeper
 
     async def run(self) -> None:
         setup_signal_handlers(self.shutdown)
         await run_migrations(self.services.db.engine)
 
-        if self.limit_keeper:
-            await self.limit_keeper.start()
         await _set_bot_commands(self.bot)
 
         logger.info("starting_bot")
@@ -49,8 +37,6 @@ class App:
         )
 
         await self._shutdown_requested.wait()
-        if self.limit_keeper:
-            await self.limit_keeper.stop()
         await self.dispatcher.stop_polling()
         await polling
 
