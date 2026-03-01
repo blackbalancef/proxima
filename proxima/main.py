@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
 from aiogram import Bot
 from aiogram.types import BotCommand
 
 from proxima.bot.factory import create_dispatcher
 from proxima.db.migrate import run_migrations
-from proxima.lifecycle import setup_signal_handlers
+from proxima.lifecycle import reset_restart, setup_signal_handlers, should_restart
 from proxima.logging import configure_logging, get_logger
 from proxima.services import Services, build_services
 from proxima.settings import get_settings
@@ -72,6 +74,7 @@ _BOT_COMMANDS = [
     BotCommand(command="config_prox", description="Bot configuration"),
     BotCommand(command="server_prox", description="Host info"),
     BotCommand(command="users_prox", description="Allowed users"),
+    BotCommand(command="update_prox", description="Update & restart bot"),
 ]
 
 
@@ -97,6 +100,10 @@ async def main() -> None:
 
 def main_cli() -> None:
     asyncio.run(main())
+
+    if should_restart():
+        reset_restart()
+        os.execv(sys.executable, [sys.executable, "-m", "proxima.main"])
 
 
 if __name__ == "__main__":

@@ -51,6 +51,19 @@ def build_model_keyboard(current: str | None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
 
+def build_update_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Update & Restart", callback_data="update:confirm"
+                ),
+                InlineKeyboardButton(text="Cancel", callback_data="update:cancel"),
+            ]
+        ]
+    )
+
+
 def build_project_keyboard(
     projects: list[dict[str, int | str]],
 ) -> InlineKeyboardMarkup:

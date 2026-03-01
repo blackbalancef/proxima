@@ -20,12 +20,14 @@ from proxima.claude.query_runner import cancel_query, clear_task, set_active_tas
 from proxima.claude.sdk import PermissionHook, iter_claude_query
 from proxima.claude.stream_renderer import StreamRenderer
 from proxima.db.models import Project
+from proxima.lifecycle import request_restart
 from proxima.logging import get_logger
 from proxima.services import Services
 from proxima.telegram.keyboards import (
     build_mode_keyboard,
     build_model_keyboard,
     build_project_keyboard,
+    build_update_keyboard,
 )
 from proxima.telegram.message_sender import MessageSender
 from proxima.utils.queue import message_queue
@@ -36,6 +38,8 @@ logger = get_logger(__name__)
 
 APP_START_TS = time.monotonic()
 MAX_OUTPUT = 4000
+_BOT_REPO_DIR = Path(__file__).resolve().parent.parent.parent
+_update_lock = asyncio.Lock()
 
 PERMISSION_PRESETS: dict[str, dict[str, str]] = {
     "plan": {
@@ -151,6 +155,7 @@ def build_router(services: Services) -> Router:
                     "  /server_prox",
                     "  /users_prox",
                     "  /config_prox",
+                    "  /update_prox",
                 ]
             )
         )
@@ -976,6 +981,128 @@ def build_router(services: Services) -> Router:
                 message_id=status.message_id,
                 text=f"$ {command}\n\nError: {str(exc)[:MAX_OUTPUT]}",
             )
+
+    # --- Self-update ---
+
+    @router.message(Command("update_prox"))
+    async def update_prox_command(message: Message) -> None:
+        if _update_lock.locked():
+            await message.answer("Update already in progress.")
+            return
+
+        git_dir = _BOT_REPO_DIR / ".git"
+        if not git_dir.exists():
+            await message.answer("Not a git repository — cannot update.")
+            return
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "fetch", "origin",
+                cwd=str(_BOT_REPO_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.wait()
+        except Exception:
+            logger.exception("git_fetch_failed")
+            await message.answer("git fetch failed.")
+            return
+
+        proc = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "--abbrev-ref", "HEAD",
+            cwd=str(_BOT_REPO_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        branch = stdout.decode().strip()
+
+        proc = await asyncio.create_subprocess_exec(
+            "git", "log", f"HEAD..origin/{branch}", "--oneline", "-20",
+            cwd=str(_BOT_REPO_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        changelog = stdout.decode().strip()
+
+        if not changelog:
+            await message.answer("Already up to date.")
+            return
+
+        await message.answer(
+            f"New commits on <b>{branch}</b>:\n\n<code>{changelog}</code>",
+            parse_mode="HTML",
+            reply_markup=build_update_keyboard(),
+        )
+
+    @router.callback_query(F.data == "update:confirm")
+    async def update_confirm_callback(callback: CallbackQuery) -> None:
+        msg = callback.message
+        if not isinstance(msg, Message):
+            return
+        await callback.answer()
+
+        if _update_lock.locked():
+            await msg.edit_text("Update already in progress.")
+            return
+
+        async with _update_lock:
+            await msg.edit_text("Pulling updates...")
+
+            proc = await asyncio.create_subprocess_exec(
+                "git", "rev-parse", "--abbrev-ref", "HEAD",
+                cwd=str(_BOT_REPO_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            branch = stdout.decode().strip()
+
+            proc = await asyncio.create_subprocess_exec(
+                "git", "pull", "origin", branch,
+                cwd=str(_BOT_REPO_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                err = stderr.decode().strip()[:MAX_OUTPUT]
+                await msg.edit_text(
+                    f"git pull failed:\n<code>{err}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            await msg.edit_text("Installing dependencies...")
+
+            proc = await asyncio.create_subprocess_exec(
+                "uv", "sync",
+                cwd=str(_BOT_REPO_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                err = stderr.decode().strip()[:MAX_OUTPUT]
+                await msg.edit_text(
+                    f"uv sync failed:\n<code>{err}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            await msg.edit_text("Update complete. Restarting...")
+            await request_restart()
+
+    @router.callback_query(F.data == "update:cancel")
+    async def update_cancel_callback(callback: CallbackQuery) -> None:
+        msg = callback.message
+        if not isinstance(msg, Message):
+            return
+        await callback.answer()
+        await msg.edit_text("Update cancelled.")
+
+    # --- Catch-all text ---
 
     @router.message(F.text)
     async def text_handler(message: Message, project: Project, thread_id: int | None) -> None:
