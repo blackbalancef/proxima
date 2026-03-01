@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proxima"
+version = "0.1.0"
+description = "Telegram bot proxying to Claude Code using Python"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "aiogram>=3.13.1",
+  "asyncpg>=0.30.0",
+  "claude-agent-sdk>=0.0.26",
+  "greenlet>=3.2.4",
+  "httpx>=0.28.1",
+  "openai>=1.63.0",
+  "orjson>=3.10.15",
+  "pydantic-settings>=2.7.1",
+  "psutil>=6.1.1",
+  "rich>=14.1.0",
+  "sqlalchemy>=2.0.37",
+  "structlog>=24.4.0",
+  "typer>=0.17.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.15.0",
+  "poethepoet>=0.33.1",
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.25.3",
+  "ruff>=0.11.0",
+]
+
+[project.scripts]
+proxima = "proxima.cli.tool:main_cli"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests_py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+ignore_missing_imports = true
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = [
+  "mypy>=1.15.0",
+  "poethepoet>=0.33.1",
+  "pytest>=8.3.5",
+  "pytest-asyncio>=0.25.3",
+  "ruff>=0.11.0",
+]
+
+[tool.poe.tasks]
+start = "proxima run"
+stop = "proxima stop"
+test = "pytest -q"
+lint = "ruff check ."
+format = "ruff format ."

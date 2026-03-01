@@ -1,5 +1,30 @@
-node_modules/
-dist/
+# Secrets
 .env
-*.log
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+
+# Tools cache
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.uv-cache/
+
+# Claude Code local
+.claude/settings.local.json
+.claude/agent-memory/
+
+# IDE
+.zed/
+
+# OS
 .DS_Store
+
+# Project runtime
+.proxima/
+projects/
+*.log

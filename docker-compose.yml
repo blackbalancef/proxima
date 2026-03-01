@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgresql://proxima:dev@db:5432/proxima
     volumes:
       - ./projects:/projects
+    command: uv run python -m proxima.main
     restart: unless-stopped
 
 volumes:
