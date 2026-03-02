@@ -133,6 +133,7 @@ def build_router(services: Services) -> Router:
                     "  /projects_prox",
                     "  /rename_prox <old> <new>",
                     "  /delete_prox <name>",
+                    "  /sync_prox",
                     "",
                     " Sessions:",
                     "  /thread_prox <name>",
@@ -202,9 +203,7 @@ def build_router(services: Services) -> Router:
                 await _create_project_thread(bot, chat_id, created, services)
             except Exception:  # noqa: BLE001
                 # Not a forum / supergroup — fall back to regular message
-                await message.answer(
-                    f'Project "{name}" created and activated.\nDir: {directory}'
-                )
+                await message.answer(f'Project "{name}" created and activated.\nDir: {directory}')
         except IntegrityError:
             await message.answer(f'Project "{name}" already exists. Use /thread_prox {name}')
 
@@ -252,9 +251,7 @@ def build_router(services: Services) -> Router:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=300.0
-            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300.0)
 
             if process.returncode != 0:
                 error = (stderr or stdout).decode("utf-8", errors="ignore").strip()
@@ -323,6 +320,100 @@ def build_router(services: Services) -> Router:
         await services.projects.delete_by_id(target.id)
         await message.answer(f'Project "{name}" deleted.')
 
+    @router.message(Command("sync_prox"))
+    async def sync_projects_command(message: Message, project: Project) -> None:  # noqa: ARG001
+        assert message.bot is not None
+        bot = message.bot
+        chat_id = message.chat.id
+        status_msg = await message.answer("Syncing projects...")
+
+        all_projects = await services.projects.find_all()
+        work_dir = str(services.settings.work_dir.resolve())
+
+        # --- Prune dead projects ---
+        pruned: list[str] = []
+        prune_errors: list[str] = []
+        for proj in all_projects:
+            if proj.name == "default":
+                continue
+            exists = await asyncio.to_thread(os.path.isdir, proj.directory)
+            if exists:
+                continue
+            # Delete forum topics for this project
+            threads = await services.sessions.find_threads_by_project(proj.id)
+            for t_chat_id, t_thread_id in threads:
+                try:
+                    await bot.delete_forum_topic(t_chat_id, t_thread_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                await services.projects.delete_by_id(proj.id)
+                pruned.append(f"{proj.name} ({proj.directory})")
+            except Exception as exc:  # noqa: BLE001
+                prune_errors.append(f"{proj.name}: {exc}")
+
+        # --- Discover new directories ---
+        remaining = await services.projects.find_all()
+        dirs = [p.directory for p in remaining]
+        tracked_dirs = set(await asyncio.to_thread(lambda: [os.path.realpath(d) for d in dirs]))
+
+        added: list[str] = []
+        skipped: list[str] = []
+
+        def _list_subdirs(parent: str) -> list[tuple[str, str]]:
+            """Return (name, resolved_path) for subdirectories of parent."""
+            base = Path(parent)
+            if not base.is_dir():
+                return []
+            return sorted(
+                (entry.name, str(entry.resolve())) for entry in base.iterdir() if entry.is_dir()
+            )
+
+        subdirs = await asyncio.to_thread(_list_subdirs, work_dir)
+        for name, resolved in subdirs:
+            if resolved in tracked_dirs:
+                continue
+            try:
+                created = await services.projects.create(
+                    {
+                        "telegram_chat_id": chat_id,
+                        "name": name,
+                        "directory": resolved,
+                        "is_active": False,
+                        "permission_mode": "bypassPermissions",
+                    }
+                )
+                try:
+                    await _create_project_thread(bot, chat_id, created, services)
+                except Exception:  # noqa: BLE001
+                    pass  # Not a forum chat
+                added.append(name)
+            except IntegrityError:
+                skipped.append(name)
+
+        # --- Build report ---
+        lines = ["Sync complete."]
+        if pruned:
+            lines.append(f"\nRemoved ({len(pruned)}):")
+            lines.extend(f"  - {p}" for p in pruned)
+        if added:
+            lines.append(f"\nAdded ({len(added)}):")
+            lines.extend(f"  - {a}" for a in added)
+        if skipped:
+            lines.append(f"\nSkipped ({len(skipped)}):")
+            lines.extend(f"  - {s}" for s in skipped)
+        if prune_errors:
+            lines.append(f"\nErrors ({len(prune_errors)}):")
+            lines.extend(f"  - {e}" for e in prune_errors)
+        if not pruned and not added and not skipped:
+            lines.append("\nNo changes needed.")
+
+        await bot.edit_message_text(
+            chat_id=status_msg.chat.id,
+            message_id=status_msg.message_id,
+            text="\n".join(lines),
+        )
+
     @router.message(Command("rename_prox"))
     async def rename_project_command(message: Message, project: Project) -> None:  # noqa: ARG001
         parts = _command_args(message).split()
@@ -361,8 +452,7 @@ def build_router(services: Services) -> Router:
             await _create_project_thread(bot, chat_id, target, services)
         except Exception as exc:  # noqa: BLE001
             await message.answer(
-                f"Cannot create topic: {exc}\n\n"
-                "Make sure this is a supergroup with Topics enabled."
+                f"Cannot create topic: {exc}\n\nMake sure this is a supergroup with Topics enabled."
             )
 
     @router.message(Command("reset_prox"))
@@ -409,13 +499,9 @@ def build_router(services: Services) -> Router:
             await message.answer("Session closed and deleted.")
 
     @router.message(Command("info_prox"))
-    async def info_command(
-        message: Message, project: Project, thread_id: int | None
-    ) -> None:
+    async def info_command(message: Message, project: Project, thread_id: int | None) -> None:
         if thread_id is not None:
-            session = await services.sessions.find_active_by_thread(
-                message.chat.id, thread_id
-            )
+            session = await services.sessions.find_active_by_thread(message.chat.id, thread_id)
         else:
             session = await services.sessions.find_active_by_project(project.id)
         lines = [
@@ -443,9 +529,7 @@ def build_router(services: Services) -> Router:
         await message.answer("\n".join(lines))
 
     @router.message(Command("model_prox"))
-    async def model_command(
-        message: Message, project: Project, thread_id: int | None
-    ) -> None:
+    async def model_command(message: Message, project: Project, thread_id: int | None) -> None:
         arg = _command_args(message).strip().lower()
         session = await services.session_manager.get_or_create(
             project.id, thread_id=thread_id, chat_id=message.chat.id
@@ -453,9 +537,7 @@ def build_router(services: Services) -> Router:
         if arg:
             model_id = SHORT_TO_MODEL.get(arg) or (arg if arg in MODEL_PRESETS else None)
             if not model_id:
-                await message.answer(
-                    f"Unknown model: {arg}\n\nAvailable: opus, sonnet, haiku"
-                )
+                await message.answer(f"Unknown model: {arg}\n\nAvailable: opus, sonnet, haiku")
                 return
             await services.session_manager.update_model(session.db_id, model_id)
             label = MODEL_PRESETS[model_id]["label"]
@@ -580,8 +662,7 @@ def build_router(services: Services) -> Router:
             return
 
         await message.answer(
-            "Unknown action. Use: /mcp_prox, /mcp_prox add, "
-            "/mcp_prox remove, /mcp_prox toggle"
+            "Unknown action. Use: /mcp_prox, /mcp_prox add, /mcp_prox remove, /mcp_prox toggle"
         )
 
     @router.message(Command("memory_prox"))
@@ -625,8 +706,7 @@ def build_router(services: Services) -> Router:
             return
 
         await message.answer(
-            "Usage: /memory_prox, /memory_prox set <content>, "
-            "/memory_prox append <content>"
+            "Usage: /memory_prox, /memory_prox set <content>, /memory_prox append <content>"
         )
 
     @router.message(Command("cmd_prox"))
@@ -712,8 +792,7 @@ def build_router(services: Services) -> Router:
             return
 
         await message.answer(
-            "Usage: /cmd_prox, /cmd_prox new, "
-            "/cmd_prox show <name>, /cmd_prox delete <name>"
+            "Usage: /cmd_prox, /cmd_prox new, /cmd_prox show <name>, /cmd_prox delete <name>"
         )
 
     @router.message(Command("server_prox"))
@@ -893,6 +972,144 @@ def build_router(services: Services) -> Router:
             if mp3_path:
                 await cleanup_temp(mp3_path)
 
+    # --- Self-update ---
+
+    @router.message(Command("update_prox"))
+    async def update_prox_command(message: Message) -> None:
+        if _update_lock.locked():
+            await message.answer("Update already in progress.")
+            return
+
+        git_dir = _BOT_REPO_DIR / ".git"
+        if not git_dir.exists():
+            await message.answer("Not a git repository — cannot update.")
+            return
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "fetch",
+                "origin",
+                cwd=str(_BOT_REPO_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.wait()
+        except Exception:
+            logger.exception("git_fetch_failed")
+            await message.answer("git fetch failed.")
+            return
+
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+            cwd=str(_BOT_REPO_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        branch = stdout.decode().strip()
+
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "log",
+            f"HEAD..origin/{branch}",
+            "--oneline",
+            "-20",
+            cwd=str(_BOT_REPO_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        changelog = stdout.decode().strip()
+
+        if not changelog:
+            await message.answer("Already up to date.")
+            return
+
+        await message.answer(
+            f"New commits on <b>{branch}</b>:\n\n<code>{changelog}</code>",
+            parse_mode="HTML",
+            reply_markup=build_update_keyboard(),
+        )
+
+    @router.callback_query(F.data == "update:confirm")
+    async def update_confirm_callback(callback: CallbackQuery) -> None:
+        msg = callback.message
+        if not isinstance(msg, Message):
+            return
+        await callback.answer()
+
+        if _update_lock.locked():
+            await msg.edit_text("Update already in progress.")
+            return
+
+        async with _update_lock:
+            await msg.edit_text("Pulling updates...")
+
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "rev-parse",
+                "--abbrev-ref",
+                "HEAD",
+                cwd=str(_BOT_REPO_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            branch = stdout.decode().strip()
+
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "pull",
+                "origin",
+                branch,
+                cwd=str(_BOT_REPO_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                err = stderr.decode().strip()[:MAX_OUTPUT]
+                await msg.edit_text(
+                    f"git pull failed:\n<code>{err}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            await msg.edit_text("Installing dependencies...")
+
+            proc = await asyncio.create_subprocess_exec(
+                "uv",
+                "sync",
+                cwd=str(_BOT_REPO_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                err = stderr.decode().strip()[:MAX_OUTPUT]
+                await msg.edit_text(
+                    f"uv sync failed:\n<code>{err}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            await msg.edit_text("Update complete. Restarting...")
+            await request_restart()
+
+    @router.callback_query(F.data == "update:cancel")
+    async def update_cancel_callback(callback: CallbackQuery) -> None:
+        msg = callback.message
+        if not isinstance(msg, Message):
+            return
+        await callback.answer()
+        await msg.edit_text("Update cancelled.")
+
+    # --- Custom & catch-all ---
+
     @router.message(F.text.regexp(r"^/(user|project):\w+"))
     async def custom_command_handler(
         message: Message, project: Project, thread_id: int | None
@@ -982,128 +1199,6 @@ def build_router(services: Services) -> Router:
                 text=f"$ {command}\n\nError: {str(exc)[:MAX_OUTPUT]}",
             )
 
-    # --- Self-update ---
-
-    @router.message(Command("update_prox"))
-    async def update_prox_command(message: Message) -> None:
-        if _update_lock.locked():
-            await message.answer("Update already in progress.")
-            return
-
-        git_dir = _BOT_REPO_DIR / ".git"
-        if not git_dir.exists():
-            await message.answer("Not a git repository — cannot update.")
-            return
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "git", "fetch", "origin",
-                cwd=str(_BOT_REPO_DIR),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.wait()
-        except Exception:
-            logger.exception("git_fetch_failed")
-            await message.answer("git fetch failed.")
-            return
-
-        proc = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "--abbrev-ref", "HEAD",
-            cwd=str(_BOT_REPO_DIR),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        branch = stdout.decode().strip()
-
-        proc = await asyncio.create_subprocess_exec(
-            "git", "log", f"HEAD..origin/{branch}", "--oneline", "-20",
-            cwd=str(_BOT_REPO_DIR),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        changelog = stdout.decode().strip()
-
-        if not changelog:
-            await message.answer("Already up to date.")
-            return
-
-        await message.answer(
-            f"New commits on <b>{branch}</b>:\n\n<code>{changelog}</code>",
-            parse_mode="HTML",
-            reply_markup=build_update_keyboard(),
-        )
-
-    @router.callback_query(F.data == "update:confirm")
-    async def update_confirm_callback(callback: CallbackQuery) -> None:
-        msg = callback.message
-        if not isinstance(msg, Message):
-            return
-        await callback.answer()
-
-        if _update_lock.locked():
-            await msg.edit_text("Update already in progress.")
-            return
-
-        async with _update_lock:
-            await msg.edit_text("Pulling updates...")
-
-            proc = await asyncio.create_subprocess_exec(
-                "git", "rev-parse", "--abbrev-ref", "HEAD",
-                cwd=str(_BOT_REPO_DIR),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
-            branch = stdout.decode().strip()
-
-            proc = await asyncio.create_subprocess_exec(
-                "git", "pull", "origin", branch,
-                cwd=str(_BOT_REPO_DIR),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                err = stderr.decode().strip()[:MAX_OUTPUT]
-                await msg.edit_text(
-                    f"git pull failed:\n<code>{err}</code>",
-                    parse_mode="HTML",
-                )
-                return
-
-            await msg.edit_text("Installing dependencies...")
-
-            proc = await asyncio.create_subprocess_exec(
-                "uv", "sync",
-                cwd=str(_BOT_REPO_DIR),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                err = stderr.decode().strip()[:MAX_OUTPUT]
-                await msg.edit_text(
-                    f"uv sync failed:\n<code>{err}</code>",
-                    parse_mode="HTML",
-                )
-                return
-
-            await msg.edit_text("Update complete. Restarting...")
-            await request_restart()
-
-    @router.callback_query(F.data == "update:cancel")
-    async def update_cancel_callback(callback: CallbackQuery) -> None:
-        msg = callback.message
-        if not isinstance(msg, Message):
-            return
-        await callback.answer()
-        await msg.edit_text("Update cancelled.")
-
-    # --- Catch-all text ---
-
     @router.message(F.text)
     async def text_handler(message: Message, project: Project, thread_id: int | None) -> None:
         if not message.text:
@@ -1130,14 +1225,8 @@ async def _create_project_thread(
             "message_thread_id": topic.message_thread_id,
         }
     )
-    meta_text = (
-        f"Project: {project.name}\n"
-        f"Dir: {project.directory}\n"
-        f"Session: #{db_session.id}"
-    )
-    meta_msg = await bot.send_message(
-        chat_id, meta_text, message_thread_id=topic.message_thread_id
-    )
+    meta_text = f"Project: {project.name}\nDir: {project.directory}\nSession: #{db_session.id}"
+    meta_msg = await bot.send_message(chat_id, meta_text, message_thread_id=topic.message_thread_id)
     try:
         await bot.pin_chat_message(chat_id, meta_msg.message_id)
     except Exception:  # noqa: BLE001
@@ -1187,9 +1276,7 @@ async def _enqueue_prompt(
                 project.id, thread_id=thread_id, chat_id=chat_id
             )
             if session.resumed:
-                await bot.send_message(
-                    chat_id, "Session resumed.", message_thread_id=thread_id
-                )
+                await bot.send_message(chat_id, "Session resumed.", message_thread_id=thread_id)
             is_bypass = project.permission_mode == "bypassPermissions"
             mode = _map_permission_mode(project.permission_mode)
 

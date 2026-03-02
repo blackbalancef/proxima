@@ -23,6 +23,11 @@ class ProjectRepository:
             )
             return result.scalar_one_or_none()
 
+    async def find_all(self) -> list[Project]:
+        async with self.db.session() as session:
+            result = await session.execute(select(Project))
+            return list(result.scalars().all())
+
     async def find_all_by_chat(self, chat_id: int) -> list[Project]:
         async with self.db.session() as session:
             result = await session.execute(

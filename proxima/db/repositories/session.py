@@ -59,9 +59,7 @@ class SessionRepository:
                 .where(Session.status == "active")
             )
             await session.execute(
-                update(Session)
-                .where(Session.id.in_(subq))
-                .values(status="closed")
+                update(Session).where(Session.id.in_(subq)).values(status="closed")
             )
             await session.commit()
 
@@ -110,6 +108,18 @@ class SessionRepository:
         async with self.db.session() as session:
             await session.execute(delete(Session).where(Session.id == session_id))
             await session.commit()
+
+    async def find_threads_by_project(self, project_id: int) -> list[tuple[int, int]]:
+        """Return (chat_id, thread_id) pairs for all thread sessions of a project."""
+        async with self.db.session() as session:
+            result = await session.execute(
+                select(Project.telegram_chat_id, Session.message_thread_id)
+                .join(Project, Session.project_id == Project.id)
+                .where(Session.project_id == project_id)
+                .where(Session.message_thread_id.is_not(None))
+                .distinct()
+            )
+            return [(row[0], row[1]) for row in result.all()]
 
     async def count_threads_by_project(self, project_id: int) -> int:
         async with self.db.session() as session:

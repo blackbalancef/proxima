@@ -60,6 +60,7 @@ _BOT_COMMANDS = [
     BotCommand(command="clone_prox", description="Clone git repo as project"),
     BotCommand(command="projects_prox", description="List projects"),
     BotCommand(command="delete_prox", description="Delete project"),
+    BotCommand(command="sync_prox", description="Sync projects with filesystem"),
     BotCommand(command="rename_prox", description="Rename project"),
     BotCommand(command="thread_prox", description="New thread session"),
     BotCommand(command="reset_prox", description="Reset session"),
