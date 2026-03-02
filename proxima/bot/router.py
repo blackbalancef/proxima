@@ -317,6 +317,13 @@ def build_router(services: Services) -> Router:
             await message.answer("Cannot delete the default project.")
             return
 
+        assert message.bot is not None
+        threads = await services.sessions.find_threads_by_project(target.id)
+        for t_chat_id, t_thread_id in threads:
+            try:
+                await message.bot.delete_forum_topic(t_chat_id, t_thread_id)
+            except Exception:  # noqa: BLE001
+                pass
         await services.projects.delete_by_id(target.id)
         await message.answer(f'Project "{name}" deleted.')
 
