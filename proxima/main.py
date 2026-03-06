@@ -17,6 +17,9 @@ from proxima.settings import get_settings
 logger = get_logger(__name__)
 
 
+os.environ.pop("CLAUDECODE", None)
+
+
 class App:
     def __init__(self, services: Services) -> None:
         self.services = services
@@ -59,6 +62,7 @@ _BOT_COMMANDS = [
     BotCommand(command="new_prox", description="Create project"),
     BotCommand(command="clone_prox", description="Clone git repo as project"),
     BotCommand(command="projects_prox", description="List projects"),
+    BotCommand(command="browse_prox", description="Browse available directories"),
     BotCommand(command="delete_prox", description="Delete project"),
     BotCommand(command="sync_prox", description="Sync projects with filesystem"),
     BotCommand(command="rename_prox", description="Rename project"),

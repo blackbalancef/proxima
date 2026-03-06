@@ -133,6 +133,7 @@ def build_router(services: Services) -> Router:
                     "  /projects_prox",
                     "  /rename_prox <old> <new>",
                     "  /delete_prox <name>",
+                    "  /browse_prox",
                     "  /sync_prox",
                     "",
                     " Sessions:",
@@ -182,7 +183,12 @@ def build_router(services: Services) -> Router:
 
         parts = shlex.split(args)
         name = parts[0]
-        directory = parts[1] if len(parts) > 1 else str(services.settings.work_dir)
+        work_dir = services.settings.work_dir
+        if len(parts) > 1:
+            raw = Path(parts[1])
+            directory = str(raw if raw.is_absolute() else work_dir / raw)
+        else:
+            directory = str(work_dir / name)
         assert message.bot is not None
         bot = message.bot
         chat_id = message.chat.id
@@ -299,6 +305,43 @@ def build_router(services: Services) -> Router:
 
         lines = [f"  {p.name} - {p.directory}" for p in projects]
         await message.answer(f"Projects:\n\n{'\n'.join(lines)}")
+
+    @router.message(Command("browse_prox"))
+    async def browse_projects_command(message: Message, project: Project) -> None:  # noqa: ARG001
+        work_dir = services.settings.work_dir.resolve()
+        if not work_dir.is_dir():
+            await message.answer(f"Work directory not found: {work_dir}")
+            return
+
+        existing = await services.projects.find_all_by_chat(message.chat.id)
+        tracked_dirs = {
+            os.path.realpath(p.directory) for p in existing
+        }
+        tracked_names = [p.name for p in existing]
+
+        subdirs = sorted(
+            entry.name
+            for entry in work_dir.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".")
+        )
+
+        available = [
+            d for d in subdirs if str((work_dir / d).resolve()) not in tracked_dirs
+        ]
+
+        lines: list[str] = []
+        if available:
+            lines.append("Available directories:")
+            for d in available:
+                lines.append(f"  {d} → /new_prox {d}")
+        else:
+            lines.append("No new directories found.")
+
+        if tracked_names:
+            lines.append(f"\nAlready tracked: {', '.join(tracked_names)}")
+
+        lines.append(f"\nWork dir: {work_dir}")
+        await message.answer("\n".join(lines))
 
     @router.message(Command("delete_prox"))
     async def delete_project_command(message: Message, project: Project) -> None:  # noqa: ARG001

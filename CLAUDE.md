@@ -35,7 +35,7 @@ To run a single test file: `uv run pytest tests_py/test_something.py`
 
 Copy `.env.example` → `.env`. Required variables:
 - `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS` (comma-separated Telegram user IDs), `DATABASE_URL`
-- `WORK_DIR` — base directory for projects (defaults to cwd)
+- `WORK_DIR` — base directory for projects (defaults to cwd). Relative paths in `/new_prox` resolve against this directory.
 - `OPENAI_API_KEY` — optional, enables voice transcription via Whisper
 - `WHISPER_LANGUAGE` — ISO-639-1 language code for transcription (optional; auto-detect if unset)
 - `ANTHROPIC_API_KEY` — optional (SDK may use its own env)
@@ -106,6 +106,10 @@ proxima/
 **Middleware stack**: AuthMiddleware (checks `ALLOWED_USER_IDS`) → ProjectResolverMiddleware (loads/creates active project) → Router handlers.
 
 **Database schema** (three tables): `projects` (chat→directory mapping, active flag, permission_mode), `sessions` (project FK, claude_session_id, status), `mcp_configs` (project FK, server JSON, enabled flag).
+
+**Port registry**: `WORK_DIR/ports.json` tracks all projects, their run/stop commands, and reserved ports to avoid conflicts across services.
+
+**Nested session guard**: On startup, `main.py` removes the `CLAUDECODE` env var so the bot can spawn Claude CLI subprocesses even when launched from within a Claude Code session.
 
 ## Testing
 
