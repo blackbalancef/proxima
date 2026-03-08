@@ -15,9 +15,9 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.exc import IntegrityError
 
-from proxima.claude.permission_handler import find_permission_handler, get_permission_handler
+from proxima.claude.permission_handler import find_permission_handler
 from proxima.claude.query_runner import cancel_query, clear_task, set_active_task
-from proxima.claude.sdk import PermissionHook, iter_claude_query
+from proxima.claude.sdk import iter_claude_cli
 from proxima.claude.stream_renderer import StreamRenderer
 from proxima.db.models import Project
 from proxima.lifecycle import request_restart
@@ -869,10 +869,6 @@ def build_router(services: Services) -> Router:
     async def config_command(message: Message) -> None:
         s = services.settings
         whisper_status = "enabled" if s.openai_api_key else "disabled"
-        try:
-            from claude_agent_sdk import __version__ as sdk_version
-        except Exception:
-            sdk_version = "unknown"
         await message.answer(
             "\n".join(
                 [
@@ -880,7 +876,7 @@ def build_router(services: Services) -> Router:
                     f"Projects dir: {s.work_dir}",
                     f"Whisper: {whisper_status}",
                     f"Log level: {s.log_level}",
-                    f"Claude SDK: {sdk_version}",
+                    "Backend: claude CLI (subprocess)",
                 ]
             )
         )
@@ -1275,12 +1271,13 @@ async def _create_project_thread(
             "message_thread_id": topic.message_thread_id,
         }
     )
-    meta_text = f"Project: {project.name}\nDir: {project.directory}\nSession: #{db_session.id}"
+    meta_text = f"Project: {project.name}\nDir: {project.directory}\nSession: pending..."
     meta_msg = await bot.send_message(chat_id, meta_text, message_thread_id=topic.message_thread_id)
     try:
         await bot.pin_chat_message(chat_id, meta_msg.message_id)
     except Exception:  # noqa: BLE001
         pass
+    await services.session_manager.update_meta_message_id(db_session.id, meta_msg.message_id)
     return int(topic.message_thread_id)
 
 
@@ -1307,13 +1304,25 @@ async def _enqueue_prompt(
             text=text[:100],
         )
 
-        sender = MessageSender(bot, chat_id, message_thread_id=thread_id)
-        status = await bot.send_message(
-            chat_id=chat_id, text="Thinking...", message_thread_id=thread_id
+        sender = MessageSender(
+            bot, chat_id, message_thread_id=thread_id, chat_type=message.chat.type
         )
-        sender.set_initial_message(status.message_id)
+        # Show immediate feedback while Claude CLI starts up
+        try:
+            await bot.send_chat_action(
+                chat_id=chat_id, action="typing", message_thread_id=thread_id
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        processing_msg_id: int | None = None
+        try:
+            processing_msg = await bot.send_message(
+                chat_id=chat_id, text="Processing...", message_thread_id=thread_id
+            )
+            processing_msg_id = processing_msg.message_id
+        except Exception:  # noqa: BLE001
+            pass
         renderer = StreamRenderer(sender)
-        permission_handler = get_permission_handler(bot, chat_id, thread_id)
 
         task = asyncio.current_task()
         if task is not None:
@@ -1327,7 +1336,6 @@ async def _enqueue_prompt(
             )
             if session.resumed:
                 await bot.send_message(chat_id, "Session resumed.", message_thread_id=thread_id)
-            is_bypass = project.permission_mode == "bypassPermissions"
             mode = _map_permission_mode(project.permission_mode)
 
             mcp_configs = await services.mcp_configs.find_enabled_by_project(project.id)
@@ -1335,41 +1343,37 @@ async def _enqueue_prompt(
             for cfg in mcp_configs:
                 mcp_servers[cfg.server_name] = json.loads(cfg.config_json)
 
-            permission_hook: PermissionHook | None = None
-            if not is_bypass:
-                if project.permission_mode == "dontAsk":
-
-                    async def auto_allow(_tool_name: str, _tool_input: dict[str, Any]) -> bool:
-                        return True
-
-                    permission_hook = auto_allow
-                else:
-                    permission_hook = permission_handler.request_permission
-
-            async for sdk_message in iter_claude_query(
+            async for cli_message in iter_claude_cli(
                 prompt=text,
                 cwd=project.directory,
                 permission_mode=mode,
                 resume_session_id=session.claude_session_id,
                 mcp_servers=mcp_servers if mcp_servers else None,
-                permission_hook=permission_hook,
                 model=session.model or DEFAULT_MODEL,
             ):
-                session_id = _extract_session_id(sdk_message)
+                if processing_msg_id:
+                    await sender.delete_message(processing_msg_id)
+                    processing_msg_id = None
+
+                session_id = _extract_session_id(cli_message)
                 if session_id:
                     await services.session_manager.update_claude_session_id(
                         session.db_id, session_id
                     )
+                    await _update_pinned_meta(
+                        bot, chat_id, thread_id, session, session_id, project,
+                        services,
+                    )
 
-                slash_cmds = _extract_slash_commands(sdk_message)
+                slash_cmds = _extract_slash_commands(cli_message)
                 if slash_cmds is not None:
                     services.claude_slash_commands.update(slash_cmds)
 
-                result_error = _extract_result_error(sdk_message)
+                result_error = _extract_result_error(cli_message)
                 if result_error:
                     sdk_result_error = result_error
 
-                await renderer.process_message(sdk_message)
+                await renderer.process_message(cli_message)
 
             await renderer.finish()
         except asyncio.CancelledError:
@@ -1423,54 +1427,24 @@ def _is_rate_limit_error(text: str) -> bool:
     return any(kw in lower for kw in _RATE_LIMIT_KEYWORDS)
 
 
-def _extract_session_id(message: Any) -> str | None:
-    try:
-        from claude_agent_sdk import ResultMessage, SystemMessage
-
-        if isinstance(message, SystemMessage) and message.subtype == "init":
-            data = message.data
-            if isinstance(data, dict):
-                sid = data.get("session_id")
-                if isinstance(sid, str):
-                    return sid
-        if isinstance(message, ResultMessage):
-            sid = message.session_id
-            if isinstance(sid, str):
-                return sid
-    except ImportError:
-        pass
-
-    # Fallback: attribute access
-    subtype = _field(message, "subtype")
-    if subtype == "init":
-        data = _field(message, "data")
+def _extract_session_id(msg: dict[str, Any]) -> str | None:
+    msg_type = msg.get("type")
+    if msg_type == "system" and msg.get("subtype") == "init":
+        data = msg.get("data")
         if isinstance(data, dict):
             sid = data.get("session_id")
             if isinstance(sid, str):
                 return sid
-    session_id = _field(message, "session_id")
-    if isinstance(session_id, str) and session_id:
-        return session_id
+    if msg_type == "result":
+        sid = msg.get("session_id")
+        if isinstance(sid, str):
+            return sid
     return None
 
 
-def _extract_slash_commands(message: Any) -> list[str] | None:
-    """Extract available slash commands from SDK init message."""
-    try:
-        from claude_agent_sdk import SystemMessage
-
-        if isinstance(message, SystemMessage) and message.subtype == "init":
-            data = message.data
-            if isinstance(data, dict):
-                cmds = data.get("slash_commands")
-                if isinstance(cmds, list):
-                    return [c for c in cmds if isinstance(c, str)]
-    except ImportError:
-        pass
-
-    subtype = _field(message, "subtype")
-    if subtype == "init":
-        data = _field(message, "data")
+def _extract_slash_commands(msg: dict[str, Any]) -> list[str] | None:
+    if msg.get("type") == "system" and msg.get("subtype") == "init":
+        data = msg.get("data")
         if isinstance(data, dict):
             cmds = data.get("slash_commands")
             if isinstance(cmds, list):
@@ -1478,33 +1452,54 @@ def _extract_slash_commands(message: Any) -> list[str] | None:
     return None
 
 
-def _extract_result_error(message: Any) -> str | None:
-    try:
-        from claude_agent_sdk import ResultMessage
-
-        if isinstance(message, ResultMessage):
-            if message.is_error:
-                result = message.result
-                if isinstance(result, str) and result.strip():
-                    return result.strip()
-            return None
-    except ImportError:
-        pass
-
-    # Fallback
-    is_error = _field(message, "is_error")
-    if not isinstance(is_error, bool) or not is_error:
+def _extract_result_error(msg: dict[str, Any]) -> str | None:
+    if msg.get("type") != "result":
         return None
-    result = _field(message, "result")
+    if not msg.get("is_error"):
+        return None
+    result = msg.get("result")
     if isinstance(result, str) and result.strip():
         return result.strip()
     return None
 
 
-def _field(obj: Any, name: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(name, default)
-    return getattr(obj, name, default)
+async def _update_pinned_meta(
+    bot: Any,
+    chat_id: int,
+    thread_id: int | None,
+    session: Any,
+    session_id: str,
+    project: Project,
+    services: Services,
+) -> None:
+    if not thread_id:
+        return
+    meta_text = (
+        f"Project: {project.name}\n"
+        f"Dir: {project.directory}\n"
+        f"Session: {session_id}"
+    )
+    try:
+        if session.meta_message_id:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=session.meta_message_id,
+                text=meta_text,
+            )
+        else:
+            meta_msg = await bot.send_message(
+                chat_id, meta_text, message_thread_id=thread_id
+            )
+            session.meta_message_id = meta_msg.message_id
+            await services.session_manager.update_meta_message_id(
+                session.db_id, meta_msg.message_id
+            )
+            try:
+                await bot.pin_chat_message(chat_id, meta_msg.message_id)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("update_pinned_meta_failed", error=str(exc))
 
 
 def _map_permission_mode(mode: str) -> str:

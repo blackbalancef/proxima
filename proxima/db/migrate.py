@@ -57,6 +57,9 @@ async def run_migrations(engine: AsyncEngine) -> None:
         """
         ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model TEXT
         """,
+        """
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS meta_message_id BIGINT
+        """,
     ]
 
     async with engine.begin() as conn:

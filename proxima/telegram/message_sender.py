@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import time
+
 from aiogram import Bot
 from aiogram.enums import ParseMode
+from aiogram.methods import SendMessageDraft
 from aiogram.types import Message
 
 from proxima.logging import get_logger
@@ -13,21 +16,94 @@ MAX_MESSAGE_LENGTH = 4000
 
 
 class MessageSender:
-    def __init__(self, bot: Bot, chat_id: int, message_thread_id: int | None = None) -> None:
+    def __init__(
+        self,
+        bot: Bot,
+        chat_id: int,
+        message_thread_id: int | None = None,
+        chat_type: str = "private",
+    ) -> None:
         self.bot = bot
         self.chat_id = chat_id
         self.message_thread_id = message_thread_id
+        self.is_private = chat_type == "private"
         self._messages: list[int] = []
         self._last_text = ""
+        self._draft_id: int | None = None
+        self._draft_failed: bool = False
 
-    def set_initial_message(self, message_id: int) -> None:
-        self._messages = [message_id]
-        self._last_text = ""
+    def _get_or_create_draft_id(self) -> int:
+        if self._draft_id is None:
+            self._draft_id = max(1, int(time.monotonic() * 1000) & 0x7FFFFFFF)
+        return self._draft_id
+
+    async def send_draft(self, text: str) -> None:
+        """Stream partial text to the user during generation.
+
+        Private chats: sendMessageDraft (Bot API 9.5+) with native streaming animation.
+        Groups/supergroups: fallback to sendMessage + editMessageText.
+        Call update_text() when done to send the final formatted message.
+        """
+        if not text:
+            return
+
+        if self.is_private and not self._draft_failed:
+            await self._send_draft_native(text)
+        else:
+            await self._send_draft_edit_fallback(text)
+
+    async def _send_draft_native(self, text: str) -> None:
+        """Private chat: sendMessageDraft with native streaming animation."""
+        draft_id = self._get_or_create_draft_id()
+        plain = strip_html_tags(text)[:MAX_MESSAGE_LENGTH]
+        try:
+            await self.bot(
+                SendMessageDraft(
+                    chat_id=self.chat_id,
+                    draft_id=draft_id,
+                    text=plain,
+                    message_thread_id=self.message_thread_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("send_draft_failed_switching_to_edit", error=str(exc))
+            self._draft_failed = True
+            await self._send_draft_edit_fallback(text)
+
+    async def _send_draft_edit_fallback(self, text: str) -> None:
+        """Group/fallback: send placeholder then editMessageText."""
+        plain = strip_html_tags(text)[:MAX_MESSAGE_LENGTH]
+        if plain == self._last_text:
+            return
+        if not self._messages:
+            try:
+                msg = await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=plain,
+                    message_thread_id=self.message_thread_id,
+                )
+                self._messages.append(msg.message_id)
+                self._last_text = plain
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("streaming_placeholder_failed", error=str(exc))
+        else:
+            try:
+                await self.bot.edit_message_text(
+                    chat_id=self.chat_id,
+                    message_id=self._messages[0],
+                    text=plain,
+                )
+                self._last_text = plain
+            except Exception as exc:  # noqa: BLE001
+                if "message is not modified" not in str(exc):
+                    logger.debug("streaming_edit_failed", error=str(exc))
 
     async def update_text(self, text: str) -> None:
-        if text == self._last_text:
-            return
-        self._last_text = text
+        """Send final formatted message (HTML). Replaces draft/placeholder."""
+        # Reset draft — the final sendMessage causes the draft animation to disappear
+        self._draft_id = None
+        # _last_text tracked plain text during streaming; always send final HTML
+        self._last_text = ""
 
         chunks = split_message(text, MAX_MESSAGE_LENGTH)
         for idx, chunk in enumerate(chunks):

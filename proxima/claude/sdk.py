@@ -1,92 +1,60 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+import asyncio
+import json
+import os
+import shutil
+import signal
+import tempfile
+from collections.abc import AsyncIterator
 from typing import Any
 
 from proxima.logging import get_logger
 
 logger = get_logger(__name__)
 
-PermissionHook = Callable[[str, dict[str, Any]], Awaitable[bool]]
+
+def _find_claude_binary() -> str:
+    path = shutil.which("claude")
+    if path:
+        return path
+    raise FileNotFoundError("claude CLI binary not found in PATH")
 
 
-def _load_sdk_symbols() -> dict[str, Any]:
-    try:
-        import claude_agent_sdk as sdk_mod  # noqa: F811
-    except Exception as exc:  # noqa: BLE001
-        logger.error("sdk_import_failed", error=str(exc))
-        raise RuntimeError(
-            "claude-agent-sdk import failed. Reinstall package and verify runtime version."
-        ) from exc
-
-    query = getattr(sdk_mod, "query", None)
-    allow = getattr(sdk_mod, "PermissionResultAllow", None)
-    deny = getattr(sdk_mod, "PermissionResultDeny", None)
-    options_cls = getattr(sdk_mod, "ClaudeAgentOptions", None) or getattr(
-        sdk_mod, "ClaudeCodeOptions", None
-    )
-
-    if not query or not allow or not deny:
-        raise RuntimeError(
-            "claude-agent-sdk is installed, but required symbols were not found "
-            "(query / PermissionResultAllow / PermissionResultDeny)."
-        )
-    if not options_cls:
-        raise RuntimeError(
-            "claude-agent-sdk is installed, but no compatible options class was found "
-            "(expected ClaudeAgentOptions or ClaudeCodeOptions)."
-        )
-
-    logger.debug("sdk_loaded", options_class=options_cls.__name__)
-    return {
-        "query": query,
-        "options": options_cls,
-        "allow": allow,
-        "deny": deny,
-    }
-
-
-async def iter_claude_query(
+async def iter_claude_cli(
     *,
     prompt: str,
     cwd: str,
     permission_mode: str,
     resume_session_id: str | None,
     mcp_servers: dict[str, Any] | None,
-    permission_hook: PermissionHook | None,
     model: str | None = None,
-) -> AsyncIterator[Any]:
-    sdk = _load_sdk_symbols()
+) -> AsyncIterator[dict[str, Any]]:
+    claude_bin = _find_claude_binary()
 
-    can_use_tool_fn = None
-    if permission_hook is not None:
-        allow_cls = sdk["allow"]
-        deny_cls = sdk["deny"]
-
-        async def _can_use_tool(tool_name: str, tool_input: dict[str, Any], _context: Any) -> Any:
-            allowed = await permission_hook(tool_name, tool_input)
-            logger.debug(
-                "permission_resolved", tool=tool_name, allowed=allowed
-            )
-            return allow_cls() if allowed else deny_cls()
-
-        can_use_tool_fn = _can_use_tool
-
-    options_kwargs: dict[str, Any] = {
-        "cwd": cwd,
-        "permission_mode": permission_mode,
-    }
-    if resume_session_id:
-        options_kwargs["resume"] = resume_session_id
-    if mcp_servers:
-        options_kwargs["mcp_servers"] = mcp_servers
-    if can_use_tool_fn is not None:
-        options_kwargs["can_use_tool"] = can_use_tool_fn
+    args = [
+        claude_bin,
+        "--print",
+        "--verbose",
+        "--include-partial-messages",
+        "--output-format", "stream-json",
+        "--permission-mode", permission_mode,
+    ]
     if model:
-        options_kwargs["model"] = model
+        args.extend(["--model", model])
+    if resume_session_id:
+        args.extend(["--resume", resume_session_id])
+
+    mcp_tmpfile: str | None = None
+    if mcp_servers:
+        mcp_config = {"mcpServers": mcp_servers}
+        fd, mcp_tmpfile = tempfile.mkstemp(suffix=".json", prefix="proxima-mcp-")
+        os.write(fd, json.dumps(mcp_config).encode())
+        os.close(fd)
+        args.extend(["--mcp-config", mcp_tmpfile])
 
     logger.info(
-        "claude_query_start",
+        "claude_cli_start",
         cwd=cwd,
         permission_mode=permission_mode,
         resume=resume_session_id is not None,
@@ -95,12 +63,75 @@ async def iter_claude_query(
         prompt_len=len(prompt),
     )
 
-    options = sdk["options"](**options_kwargs)
-    query = sdk["query"]
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+    )
 
-    message_count = 0
-    async for message in query(prompt=prompt, options=options):
-        message_count += 1
-        yield message
+    try:
+        assert proc.stdin is not None
+        try:
+            proc.stdin.write(prompt.encode())
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            logger.warning("stdin_write_failed", error=str(exc))
+            await proc.wait()
+            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
+            stderr_text = stderr_bytes.decode(errors="replace").strip()
+            raise RuntimeError(
+                f"claude CLI died before accepting input: {stderr_text[:300] or exc}"
+            ) from exc
+        finally:
+            proc.stdin.close()
 
-    logger.info("claude_query_done", message_count=message_count)
+        assert proc.stdout is not None
+        message_count = 0
+        async for line in proc.stdout:
+            line_str = line.decode().strip()
+            if not line_str:
+                continue
+            try:
+                msg = json.loads(line_str)
+            except json.JSONDecodeError:
+                logger.debug("cli_non_json_line", line=line_str[:200])
+                continue
+            message_count += 1
+            yield msg
+
+        await proc.wait()
+
+        if proc.returncode and proc.returncode != 0:
+            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
+            stderr_text = stderr_bytes.decode(errors="replace").strip()
+            logger.warning(
+                "claude_cli_stderr",
+                returncode=proc.returncode,
+                stderr=stderr_text[:500],
+                message_count=message_count,
+            )
+            raise RuntimeError(
+                f"claude CLI exited with code {proc.returncode}: {stderr_text[:300] or 'no stderr'}"
+            )
+
+        logger.info("claude_cli_done", message_count=message_count, returncode=proc.returncode)
+    except asyncio.CancelledError:
+        logger.info("claude_cli_cancelled")
+        try:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3.0)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+        except ProcessLookupError:
+            pass
+        raise
+    finally:
+        if mcp_tmpfile:
+            try:
+                os.unlink(mcp_tmpfile)
+            except OSError:
+                pass

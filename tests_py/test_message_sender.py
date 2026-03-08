@@ -32,23 +32,22 @@ class FakeBot:
 
 
 @pytest.mark.asyncio
-async def test_sender_edits_initial_message() -> None:
+async def test_sender_sends_new_message() -> None:
     bot = FakeBot()
     sender = MessageSender(bot, 123)  # type: ignore[arg-type]
-    sender.set_initial_message(10)
 
     await sender.update_text("hello")
 
-    assert bot.edits == [(123, 10, "hello")]
+    assert len(bot.messages) == 1
+    assert bot.messages[0] == (123, "hello")
 
 
 @pytest.mark.asyncio
 async def test_sender_splits_long_messages() -> None:
     bot = FakeBot()
     sender = MessageSender(bot, 123)  # type: ignore[arg-type]
-    sender.set_initial_message(10)
 
     await sender.update_text("a" * 4500)
 
-    assert len(bot.edits) == 1
-    assert len(bot.messages) == 1
+    # First chunk sent as new message, second chunk also as new message
+    assert len(bot.messages) == 2

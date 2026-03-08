@@ -16,6 +16,7 @@ class ActiveSession:
     thread_id: int | None = None
     resumed: bool = field(default=False)
     model: str | None = field(default=None)
+    meta_message_id: int | None = field(default=None)
 
 
 class SessionManager:
@@ -43,6 +44,7 @@ class SessionManager:
                 project_id=existing.project_id,
                 claude_session_id=existing.claude_session_id,
                 model=existing.model,
+                meta_message_id=getattr(existing, "meta_message_id", None),
             )
 
         session = await self.session_repo.create({"project_id": project_id, "status": "active"})
@@ -68,6 +70,7 @@ class SessionManager:
                 claude_session_id=existing.claude_session_id,
                 thread_id=thread_id,
                 model=existing.model,
+                meta_message_id=getattr(existing, "meta_message_id", None),
             )
 
         session = await self.session_repo.create(
@@ -78,6 +81,10 @@ class SessionManager:
             db_id=session.id, project_id=session.project_id, claude_session_id=None,
             thread_id=thread_id,
         )
+
+    async def update_meta_message_id(self, db_id: int, meta_message_id: int) -> None:
+        await self.session_repo.update(db_id, {"meta_message_id": meta_message_id})
+        logger.debug("meta_message_id_updated", db_id=db_id, meta_message_id=meta_message_id)
 
     async def update_model(self, db_id: int, model: str | None) -> None:
         await self.session_repo.update(db_id, {"model": model})

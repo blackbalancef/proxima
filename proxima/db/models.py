@@ -50,6 +50,7 @@ class Session(Base):
     claude_session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     message_thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
     last_activity: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
